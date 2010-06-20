@@ -1,25 +1,10 @@
 import ast
-
-"""	
-Structure:
-	FunctionDef name, body
-	ClassDef name, body
-	Module body
-
-Sequence:
-	Call func args keywords starargs kwargs
-	Import names
-	
-Branching:
-	If test, body, orelse
-	TryExcept body handlers orelse
-	ExceptHandler type name body
-	With context_expr optional_vars body
-
-Iteration:
-	For target iter body orelse
-	While test body orelse
-"""
+import ubigraph
+import sys
+import os
+import time
+import pyinotify
+import logging
 
 class Construct(object):
 	name = None
@@ -62,7 +47,13 @@ class CodeFileConverter(object):
 	def remove_file_extension(self, filename):
 		return ".".join(filename.split(".")[:-1])
 		
+	def get_code_extensions(self):
+		pass
+		
 class PythonConverter(CodeFileConverter, ast.NodeVisitor):
+
+	def get_code_extensions(self):
+		return ("py",)
 
 	def convert_source(self, source):
 		tree = ast.parse(source)
@@ -135,3 +126,108 @@ class PythonConverter(CodeFileConverter, ast.NodeVisitor):
 	def generic_visit(self,node):
 		return self.handle_fields(node,node._fields)
 	
+class FileMonitor(pyinotify.ProcessEvent):
+
+	def process_IN_CREATE(self, event):
+		logging.info("%s created" % event.pathname)
+		if event.dir:
+			self.handler.handle_create_dir(event.path,event.name)
+		else:
+			self.handler.handle_create_file(event.path,event.name)		
+		
+	def process_IN_DELETE(self, event):
+		logging.info("%s deleted" % event.pathname)
+		if event.dir:
+			self.handler.handle_remove_dir(event.path,event.name)
+		else:
+			self.handler.handle_remove_file(event.path,event.name)
+		
+	def process_IN_MODIFY(self, event):
+		logging.info("%s modified" % event.pathname)
+		if not event.dir:
+			self.handler.handle_change_file(event.path,event.name)		
+		
+	def process_IN_MOVED_FROM(self, event):
+		logging.info("%s moved out" % event.pathname)
+		if event.dir:
+			self.handler.handle_remove_dir(event.path,event.name)
+		else:
+			self.handler.handle_remove_file(event.path,event.name)
+		
+	def process_IN_MOVED_TO(self, event):
+		logging.info("%s moved in" % event.pathname)
+		if event.dir:
+			self.handler.handle_create_dir(event.path,event.name)
+		else:
+			self.handler.handle_create_file(event.path,event.name)
+		
+	def run(self, rootdir, handler):
+		self.rootdir = rootdir
+		self.handler = handler
+		self.wm = pyinotify.WatchManager()
+		self.mask = ( pyinotify.IN_DELETE | pyinotify.IN_CREATE 
+			| pyinotify.IN_MODIFY | pyinotify.IN_MOVED_FROM 
+			| pyinotify.IN_MOVED_TO )
+		self.notifier = pyinotify.Notifier(self.wm, self)
+		self.wm.add_watch(self.rootdir,self.mask,rec=True,auto_add=True)
+		self.notifier.loop()
+
+class FileUpdateException(exception):
+	pass
+
+class ProjectManager(object):
+
+	def __init__(self, filemon, parser, output, dirpath):
+		self.filemon = filemon
+		self.parser = parser
+		self.output = output
+		self.dirpath = dirpath
+		self.project = None
+
+	def manage(self):
+		self.filemon.run(self.dirpath, self)
+
+	def update_file(self, filepath, isdir):
+		# split path
+		p = []
+		while not filepath in ("","/"):
+			filepath, part = os.path.split(filepath)
+			p.insert(0,part)		
+		target = p[-1]
+		p = p[:-1]
+		
+		# walk down packages to one containing target
+		if self.project==None or self.project.name!=p[0]:
+			raise FileUpdateException(p[0])
+			
+		curnode = self.project	
+		for i in range(1,len(p)):
+			packagename = p[i]
+			found = False
+			for child in curnode.children:
+				if isinstance(child,Package) and child.name == packagename:
+					curnode = child
+					found = True
+					break
+			if not found:
+				raise FileUpdateException(os.path.join(p[:i+1]))							
+		
+
+	def handle_create_dir(self,path,name):
+		print "dir %s created in %s" % (name,path)
+		
+	def handle_create_file(self,path,name):
+		print "file %s created in %s" % (name,path)
+		
+	def handle_change_file(self,path,name):
+		print "file %s changed in %s" % (name,path)
+		
+	def handle_remove_dir(self,path,name):
+		print "dir %s removed from %s" % (name,path)
+		
+	def handle_remove_file(self,path,name):
+		print "file %s removed from %s" % (name,path)
+
+logging.basicConfig(level=logging.ERROR)
+f = FileMonitor()
+f.run(sys.argv[1], Test())
