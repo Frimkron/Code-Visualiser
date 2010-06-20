@@ -187,6 +187,20 @@ class ProjectManager(object):
 	def manage(self):
 		self.filemon.run(self.dirpath, self)
 
+	def create_package(self, path, name):
+		# TODO: check path exists, create package, invoke render
+		pass
+
+	def remove_node(self, path, name):
+		# TODO: check path exists, remove node and children, invoke render
+		# this method can remove packages, classes or whatever might be 
+		# represented by a file or directory, and has a name.
+		pass
+
+	def update_file_contents(self, path, filename):
+		# TODO: check path exists, parse file, replace structure, invoke render
+		pass
+	"""	
 	def update_file(self, filepath, isdir):
 		# split path
 		p = []
@@ -210,8 +224,8 @@ class ProjectManager(object):
 					found = True
 					break
 			if not found:
-				raise FileUpdateException(os.path.join(p[:i+1]))							
-		
+				raise FileUpdateException(os.path.join(p[:i+1]))
+	"""	
 
 	def handle_create_dir(self,path,name):
 		print "dir %s created in %s" % (name,path)
