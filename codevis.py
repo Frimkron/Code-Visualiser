@@ -12,7 +12,7 @@ class Construct(object):
 	Base class for syntax tree nodes.
 	"""
 	name = None
-	children = ()
+	children = []
 	
 	def __init__(self,name=None,children=None):
 		self.name = name
@@ -296,6 +296,7 @@ class ProjectManager(object):
 		
 		# initialise the project
 		self.project = self._make_package_from_dir(self.dirpath,self.project_name)
+		# TODO: initial output update here
 
 	def manage(self):
 		"""	
@@ -323,90 +324,115 @@ class ProjectManager(object):
 					# parse file adding contents as child
 					children.append(parser.convert_file(fullpath))
 					
-		pkg.children = tuple(children)
+		pkg.children = children
 		return pkg					
 
 	def _create_package(self, path, name):
-		# TODO: check path exists, create package, invoke render
-		pass
+		"""	
+		Creates a new package with the given name in the package
+		identified by the project-relative file path, then invokes
+		the output renderer to update.
+		"""
+		package = self._get_package(path)
+		
+		package.children.append(Package(name=name))
+
+		# TODO: invoke output render here
 
 	def _remove_node(self, path, name):
-		# TODO: check path exists, remove node and children, invoke render
-		# this method can remove packages, classes or whatever might be 
-		# represented by a file or directory, and has a name.
+		"""	
+		Removes a tree node represented by a file or directory,
+		then invokes the output renderer to update.
+		Path is the project-relative path of the directory the 
+		file/directory resides in. Name is the name of the 
+		file/directory.
+		"""
+		
+		package = self._get_package(path)
+		
+		# find construct by name
+		for i,child in enumerate(package.children):
+			if child.name == name:
+				# snip
+				del(package.children[i])
+				break
+		else:
+			# not found
+			raise FileUpdateException("Node %s in %s does not exist" % (name,path))
+		
+		# TODO: invoke render here
+
+	def _update_file_contents(self, path, filename):
+		"""	
+		Creates or replaces the necessary nodes represented by the file
+		identified by the given project-relative file path and file name.
+		Then invokes output render to update.
+		"""
+		# TODO: check path exists, parse file, replace structure, invoke render
+		pass
+
+	def _get_package(self, path):
+		"""	
+		Returns the package identified by the project-relative file path.
+		Raises FileUpdateException if this package does not exist
+		"""
+		# split path into package names
 		pparts = []
 		while not path in ("","/"):
 			path,part = os.path.split(path)
 			pparts.insert(0,part)
-		
-		pass
 
-	def _update_file_contents(self, path, filename):
-		# TODO: check path exists, parse file, replace structure, invoke render
-		pass
-		
-	"""	
-	def update_file(self, filepath, isdir):
-		# split path
-		p = []
-		while not filepath in ("","/"):
-			filepath, part = os.path.split(filepath)
-			p.insert(0,part)		
-		target = p[-1]
-		p = p[:-1]
-		
-		# walk down packages to one containing target
-		if self.project==None or self.project.name!=p[0]:
-			raise FileUpdateException(p[0])
-			
-		curnode = self.project	
-		for i in range(1,len(p)):
-			packagename = p[i]
-			found = False
-			for child in curnode.children:
-				if isinstance(child,Package) and child.name == packagename:
-					curnode = child
-					found = True
+		# descend to correct package
+		curr = self.project
+		for pname in pparts:
+			for child in curr.children:
+				if child.name == pname:
+					curr = child
 					break
-			if not found:
-				raise FileUpdateException(os.path.join(p[:i+1]))
-	"""
+			else:
+				# not found
+				raise FileUpdateException("Package %s does not exist" % path)
+		
+		# return it
+		return curr
 
 	def handle_create_dir(self,path,name):
 		"""	
 		File monitor hook - invoked when a directory is created
 		"""
-		print "dir %s created in %s" % (name,path)
-		# TODO: call create_package
+		logging.info("dir %s created in %s" % (name,path))
+		self._create_package(path,name)
 		
 	def handle_create_file(self,path,name):
 		"""	
 		File monitor hook - invoked when a file is created
 		"""
-		print "file %s created in %s" % (name,path)
-		# TODO: call update_file_contents
+		logging.info("file %s created in %s" % (name,path))
+		self._update_file_contents(path,name)
 		
 	def handle_change_file(self,path,name):
 		"""	
 		File monitor hook - invoked when an existing file is altered
 		"""
-		print "file %s changed in %s" % (name,path)
-		# TODO: call update_file_contents
+		logging.info("file %s changed in %s" % (name,path))
+		self._update_file_contents(path,name)
 		
 	def handle_remove_dir(self,path,name):
 		"""	
 		File monitor hook - invoked when an existing directory is removed
 		"""
-		print "dir %s removed from %s" % (name,path)
-		# TODO: call remove_node
+		logging.info("dir %s removed from %s" % (name,path))
+		self._remove_node(path,name)
 		
 	def handle_remove_file(self,path,name):
 		"""	
 		File monitor hook - invoked when an existing file is removed
 		"""
-		print "file %s removed from %s" % (name,path)
-		# TODO call remove_node
+		logging.info("file %s removed from %s" % (name,path))
+		self._remove_node(path,name)
 
-logging.basicConfig(level=logging.ERROR)
-f = FileMonitor()
-f.run(sys.argv[1], Test())
+
+if __name__ == "__main__":
+	logging.basicConfig(level=logging.ERROR)
+	f = FileMonitor()
+	f.run(sys.argv[1], Test())
