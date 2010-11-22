@@ -161,32 +161,28 @@ class PythonConverter(ast.NodeVisitor):
 		ret = []
 		for field in fields:
 			value = getattr(node,field)			
-			# is field value a list?
+			# list of items
 			if isinstance(value, list):
 				for item in value:
-					# is list item a node?
-					if isinstance(item, ast.AST):
-						# visit node and append return value
-						r = self.visit(item)					
-						if r!=None: ret.append(r)
-			# or is field value a node?
-			elif isinstance(value, ast.AST):
-				# visit node and append return value
-				r = self.visit(value)
-				if r!=None: ret.append(r)
+					self._visit_and_collect(item,ret)
+			# single item
+			else:
+				self._visit_and_collect(value,ret)
 		if len(ret) > 0:
 			return ret
 			
-	def _handle_field_value(self, value, retlist):
+	def _visit_and_collect(self, value, retlist):
 		"""	
-		Processes a node field's value, appending a flattened list of constructs
-		to the given list
+		Visits the item, if a node, flattens the result and adds to list
 		"""
-		# is value a node?
 		if isinstance(value, ast.AST):
-			self._handle_field_value(self.visit(value), retlist)
-			
-			# TODO: what the crap am I trying to do here? WIP
+			r = self.visit(value)
+			if r!=None:
+				# visit may return a list if generic_visit was used
+				if isinstance(r,list):
+					retlist.extend(r)
+				else:
+					retlist.append(r)		
 		
 	def generic_visit(self,node):
 		"""	
@@ -208,9 +204,9 @@ class FileMonitor(pyinotify.ProcessEvent):
 		"""
 		logging.info("%s created" % event.pathname)
 		if event.dir:
-			self.handler.handle_create_dir(event.path,event.name)
+			self.handler.handle_create_dir(self._rel_path(event.path),event.name)
 		else:
-			self.handler.handle_create_file(event.path,event.name)		
+			self.handler.handle_create_file(self._rel_path(event.path),event.name)		
 		
 	def process_IN_DELETE(self, event):
 		"""	
@@ -218,9 +214,9 @@ class FileMonitor(pyinotify.ProcessEvent):
 		"""
 		logging.info("%s deleted" % event.pathname)
 		if event.dir:
-			self.handler.handle_remove_dir(event.path,event.name)
+			self.handler.handle_remove_dir(self._rel_path(event.path),event.name)
 		else:
-			self.handler.handle_remove_file(event.path,event.name)
+			self.handler.handle_remove_file(self._rel_path(event.path),event.name)
 		
 	def process_IN_MODIFY(self, event):
 		"""	
@@ -228,7 +224,7 @@ class FileMonitor(pyinotify.ProcessEvent):
 		"""
 		logging.info("%s modified" % event.pathname)
 		if not event.dir:
-			self.handler.handle_change_file(event.path,event.name)		
+			self.handler.handle_change_file(self._rel_path(event.path),event.name)		
 		
 	def process_IN_MOVED_FROM(self, event):
 		"""	
@@ -236,9 +232,9 @@ class FileMonitor(pyinotify.ProcessEvent):
 		"""
 		logging.info("%s moved out" % event.pathname)
 		if event.dir:
-			self.handler.handle_remove_dir(event.path,event.name)
+			self.handler.handle_remove_dir(self._rel_path(event.path),event.name)
 		else:
-			self.handler.handle_remove_file(event.path,event.name)
+			self.handler.handle_remove_file(self._rel_path(event.path),event.name)
 		
 	def process_IN_MOVED_TO(self, event):
 		"""	
@@ -246,9 +242,12 @@ class FileMonitor(pyinotify.ProcessEvent):
 		"""
 		logging.info("%s moved in" % event.pathname)
 		if event.dir:
-			self.handler.handle_create_dir(event.path,event.name)
+			self.handler.handle_create_dir(self._rel_path(event.path),event.name)
 		else:
-			self.handler.handle_create_file(event.path,event.name)
+			self.handler.handle_create_file(self._rel_path(event.path),event.name)
+		
+	def _rel_path(self, path):
+		return path[len(self.rootdir)+1:]
 		
 	def run(self, rootdir, handler):
 		"""	
@@ -260,6 +259,7 @@ class FileMonitor(pyinotify.ProcessEvent):
 			handle_change_file(path,name)
 			handle_remove_dir(path,name)
 			handle_remove_file(path,name)
+		Paths are relative to the given root directory
 		"""
 		self.rootdir = rootdir
 		self.handler = handler
@@ -283,6 +283,13 @@ class ProjectManager(object):
 		"""	
 		Takes a file monitor object, code parser object, output rendering object,
 		path to project directory and the project name
+		File monitor:
+			run(dirpath,listener)
+		Code parser:
+			convert_file(filename)
+			get_code_extensions()
+		Output renderer:
+			render(tree)
 		"""
 		self.filemon = filemon
 		self.parser = parser
@@ -293,12 +300,14 @@ class ProjectManager(object):
 		
 		# initialise the project
 		self.project = self._make_package_from_dir(self.dirpath,self.project_name)
-		# TODO: initial output update here
 
 	def manage(self):
 		"""	
 		Main loop - invoked to begin monitoring the project
 		"""
+		# update output
+		self.output.render(self.project)
+		# begin monitoring changes
 		self.filemon.run(self.dirpath, self)
 
 	def _make_package_from_dir(self,dirpath,name):
@@ -311,7 +320,7 @@ class ProjectManager(object):
 		pkg = Package(name=name)
 		children = []
 		# iterate over directory contents
-		with fname in sorted(os.listdir(dirpath)):
+		for fname in sorted(os.listdir(dirpath)):
 			fullpath = os.path.join(dirpath,fname)
 			if os.path.isdir(fullpath):
 				# item is a directory - recurse to add package as child
@@ -320,7 +329,7 @@ class ProjectManager(object):
 				# item is a file. Is it a code file?
 				if any(map(lambda ext: fname.endswith(ext), self.parser.get_code_extensions())):
 					# parse file adding contents as child
-					children.append(parser.convert_file(fullpath))
+					children.append(self.parser.convert_file(fullpath))
 					
 		pkg.children = children
 		return pkg					
@@ -336,7 +345,8 @@ class ProjectManager(object):
 		package.children.append(Package(name=name))
 		package.children.sort(key="name")
 
-		# TODO: invoke output render here
+		# update output
+		self.output.render(self.project)
 
 	def _remove_node(self, path, name):
 		"""	
@@ -359,7 +369,8 @@ class ProjectManager(object):
 			# not found
 			raise FileUpdateException("Node %s in %s does not exist" % (name,path))
 		
-		# TODO: invoke render here
+		# update output
+		self.output.render(self.project)
 
 	def _update_file_contents(self, path, filename):
 		"""	
@@ -368,6 +379,8 @@ class ProjectManager(object):
 		Then invokes output render to update.
 		"""
 		package = self._get_package(path)
+		
+		# TODO: filename to construct name!
 		
 		# find construct by name (may not exist)
 		for i,child in enumerate(package.children):
@@ -380,7 +393,8 @@ class ProjectManager(object):
 		package.children.append(self.parser.convert_file(os.path.join(self.dirpath,path,filename)))
 		package.children.sort(key="name")
 		
-		# TODO: invoke render here
+		# update output
+		self.output.render(self.project)
 
 	def _get_package(self, path):
 		"""	
@@ -444,6 +458,10 @@ class ProjectManager(object):
 
 
 if __name__ == "__main__":
+	if True:
+		pass
+	else:
+		pass
 	logging.basicConfig(level=logging.ERROR)
 	f = FileMonitor()
 	f.run(sys.argv[1], Test())
