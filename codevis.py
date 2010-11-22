@@ -1,5 +1,5 @@
 import ast
-import ubigraph
+#import ubigraph
 import sys
 import os
 import os.path
@@ -35,13 +35,19 @@ class Iteration(Construct):
 
 class Branch(Construct):
 	pass
-
-
-class CodeFileConverter(object):
+	
+class BranchPart(Construct):
+	pass
+	
+		
+class PythonConverter(ast.NodeVisitor):
 	"""	
-	Base class for programming language parsers.
+	Code file converter implementation for the Python programming language.
 	"""
 	
+	def _remove_file_extension(self,filename):
+		return ".".join(filename.split(".")[:-1])
+
 	def convert_file(self, filepath):
 		"""	
 		Reads the given code file and outputs its contents as a syntax tree
@@ -50,47 +56,22 @@ class CodeFileConverter(object):
 		with open(filepath) as f:
 			source = f.read()
 		filename = os.path.basename(filepath)
-		return self.convert_source(source, filename)
-		
-	def convert_source(self, source, name): 
-		"""	
-		Parses the given source string and returns its contents as a syntax
-		tree consisting of nested Construct objects. Name is the name
-		associated with the source (e.g. the filename)
-		"""
-		pass
-		
-	def remove_file_extension(self, filename):
-		"""	
-		Helper for removing the file extension from the given filename
-		"""
-		return ".".join(filename.split(".")[:-1])
-		
+		return self._convert_source(source, filename)
+
 	def get_code_extensions(self):
 		"""	
 		Returns a sequence containing the possible source file extensions for
 		this programming language
 		"""
-		pass
-	
-		
-class PythonConverter(CodeFileConverter, ast.NodeVisitor):
-	"""	
-	CodeFileConverter implementation for the Python programming language.
-	"""
-
-	def get_code_extensions(self):
-		"""	
-		Overidden from CodeFileConverter. Returns possible Python code file
-		extensions.
-		"""
 		return ("py",)
 
-	def convert_source(self, source, name):
+	def _convert_source(self, source, name):
 		"""	
-		Overidden from CodeFileConverter. Parses the given source string and
-		returns the Construct tree. Name is not used.
+		Parses the given source string and returns its contents as a syntax
+		tree consisting of nested Construct objects. Name is the name
+		associated with the source (e.g. the filename)
 		"""
+		self.filename = name
 		tree = ast.parse(source)
 		return self.visit(tree)
 
@@ -99,7 +80,7 @@ class PythonConverter(CodeFileConverter, ast.NodeVisitor):
 		NodeVisitor hook - creates Package and descends into all children
 		"""
 		p = Package()
-		p.name = self.remove_file_extension(self.filename)
+		p.name = self._remove_file_extension(self.filename)
 		p.children = self.generic_visit(node)
 		return p
 
@@ -166,30 +147,46 @@ class PythonConverter(CodeFileConverter, ast.NodeVisitor):
 		b = Branch()
 		b.children = []
 		for field in branch_fields:
-			value = getattr(node,field)
-			r = self._handle_fields(node,(field,))
-			if r!=None: b.children.append(r)
+			bp = BranchPart()
+			bp.children = self._handle_fields(node,(field,))
+			b.children.append(bp)
 		return b					
 					
 	def _handle_fields(self, node, fields):
 		"""	
 		Calls 'visit' for each child node of the given node, in fields as 
-		named by the 'fields' parameter, collecting the return values fed 
-		back and returning them as a list where not None.
+		named by the 'fields' parameter, collecting the constructs fed 
+		back and returning them as a flattened list.
 		"""
 		ret = []
 		for field in fields:
 			value = getattr(node,field)			
+			# is field value a list?
 			if isinstance(value, list):
 				for item in value:
+					# is list item a node?
 					if isinstance(item, ast.AST):
+						# visit node and append return value
 						r = self.visit(item)					
 						if r!=None: ret.append(r)
+			# or is field value a node?
 			elif isinstance(value, ast.AST):
+				# visit node and append return value
 				r = self.visit(value)
 				if r!=None: ret.append(r)
 		if len(ret) > 0:
 			return ret
+			
+	def _handle_field_value(self, value, retlist):
+		"""	
+		Processes a node field's value, appending a flattened list of constructs
+		to the given list
+		"""
+		# is value a node?
+		if isinstance(value, ast.AST):
+			self._handle_field_value(self.visit(value), retlist)
+			
+			# TODO: what the crap am I trying to do here? WIP
 		
 	def generic_visit(self,node):
 		"""	
@@ -274,7 +271,7 @@ class FileMonitor(pyinotify.ProcessEvent):
 		self.wm.add_watch(self.rootdir,self.mask,rec=True,auto_add=True)
 		self.notifier.loop()
 
-class FileUpdateException(exception):
+class FileUpdateException(Exception):
 	pass
 
 class ProjectManager(object):
@@ -309,15 +306,16 @@ class ProjectManager(object):
 		Parses any code files in directory and recurses for nested directories. 
 		Should be invoked to initialise the project. Returns a single package object 
 		representing the directory. Name is the name to give the returned package.
+		Package contents are added in name order.
 		"""
 		pkg = Package(name=name)
 		children = []
 		# iterate over directory contents
-		with fname in os.listdir(dirpath):
+		with fname in sorted(os.listdir(dirpath)):
 			fullpath = os.path.join(dirpath,fname)
 			if os.path.isdir(fullpath):
 				# item is a directory - recurse to add package as child
-				children.append(self._make_package_from_dir(fullpath,fname)
+				children.append(self._make_package_from_dir(fullpath,fname))
 			else:
 				# item is a file. Is it a code file?
 				if any(map(lambda ext: fname.endswith(ext), self.parser.get_code_extensions())):
@@ -333,9 +331,10 @@ class ProjectManager(object):
 		identified by the project-relative file path, then invokes
 		the output renderer to update.
 		"""
-		package = self._get_package(path)
+		package = self._get_package(path)		
 		
 		package.children.append(Package(name=name))
+		package.children.sort(key="name")
 
 		# TODO: invoke output render here
 
@@ -368,8 +367,20 @@ class ProjectManager(object):
 		identified by the given project-relative file path and file name.
 		Then invokes output render to update.
 		"""
-		# TODO: check path exists, parse file, replace structure, invoke render
-		pass
+		package = self._get_package(path)
+		
+		# find construct by name (may not exist)
+		for i,child in enumerate(package.children):
+			if child.name == name:
+				# found existing, remove it
+				del(package.children[i])
+				break
+				
+		# parse file and add construct
+		package.children.append(self.parser.convert_file(os.path.join(self.dirpath,path,filename)))
+		package.children.sort(key="name")
+		
+		# TODO: invoke render here
 
 	def _get_package(self, path):
 		"""	
