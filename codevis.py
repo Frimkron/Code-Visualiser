@@ -7,6 +7,7 @@ import time
 import pyinotify
 import logging
 
+
 class Construct(object):
 	"""	
 	Base class for syntax tree nodes.
@@ -21,24 +22,34 @@ class Construct(object):
 	def __repr__(self):
 		return "%s(%s,%s)" % (self.__class__.__name__,repr(self.name),repr(self.children))
 
+
 class Package(Construct):
 	pass
+
 
 class Class(Construct):
 	pass
 
+
 class Function(Construct):
 	pass
+
 
 class Iteration(Construct):
 	pass
 
+
 class Branch(Construct):
 	pass
+
 	
 class BranchPart(Construct):
 	pass
-	
+
+
+class ParseError(Exception):
+	pass	
+
 		
 class PythonConverter(ast.NodeVisitor):
 	"""	
@@ -51,7 +62,9 @@ class PythonConverter(ast.NodeVisitor):
 	def convert_file(self, filepath):
 		"""	
 		Reads the given code file and outputs its contents as a syntax tree
-		consisting of nested Construct objects.
+		consisting of nested Construct objects. Raises ParseError if the syntax
+		of the file is invalid. The same file name must always
+		yield the same root Construct name e.g. foo.py => Package "foo"
 		"""
 		with open(filepath) as f:
 			source = f.read()
@@ -72,8 +85,12 @@ class PythonConverter(ast.NodeVisitor):
 		associated with the source (e.g. the filename)
 		"""
 		self.filename = name
-		tree = ast.parse(source)
-		return self.visit(tree)
+		try:
+			tree = ast.parse(source)
+			return self.visit(tree)
+			
+		except (SyntaxError,TypeError) as e:
+			raise ParseError(e)
 
 	def visit_Module(self, node):
 		"""	
@@ -271,15 +288,29 @@ class FileMonitor(pyinotify.ProcessEvent):
 		self.wm.add_watch(self.rootdir,self.mask,rec=True,auto_add=True)
 		self.notifier.loop()
 
+
+class SimpleOutput(object):
+
+	def render(self, tree):
+		self._pretty(tree)
+		
+	def _pretty(self,tree,indent=0):
+		print "\t"*indent, tree.__class__.__name__, tree.name
+		if tree.children:
+			for child in tree.children:
+				self._pretty(child,indent+1)
+
+
 class FileUpdateException(Exception):
 	pass
+
 
 class ProjectManager(object):
 	"""	
 	Central class for tracking a code project. 
 	"""
 
-	def __init__(self, filemon, parser, output, dirpath, projname):
+	def __init__(self, filemon, parser, output, dirpath, projname, dot_files=False):
 		"""	
 		Takes a file monitor object, code parser object, output rendering object,
 		path to project directory and the project name
@@ -297,6 +328,7 @@ class ProjectManager(object):
 		self.dirpath = dirpath
 		self.project = None
 		self.project_name = projname
+		self.dot_files = dot_files
 		
 		# initialise the project
 		self.project = self._make_package_from_dir(self.dirpath,self.project_name)
@@ -321,15 +353,20 @@ class ProjectManager(object):
 		children = []
 		# iterate over directory contents
 		for fname in sorted(os.listdir(dirpath)):
-			fullpath = os.path.join(dirpath,fname)
-			if os.path.isdir(fullpath):
-				# item is a directory - recurse to add package as child
-				children.append(self._make_package_from_dir(fullpath,fname))
-			else:
-				# item is a file. Is it a code file?
-				if any(map(lambda ext: fname.endswith(ext), self.parser.get_code_extensions())):
-					# parse file adding contents as child
-					children.append(self.parser.convert_file(fullpath))
+			if self.dot_files or not fname.startswith("."):
+				fullpath = os.path.join(dirpath,fname)
+				if os.path.isdir(fullpath):
+					# item is a directory - recurse to add package as child
+					children.append(self._make_package_from_dir(fullpath,fname))
+				else:
+					# item is a file. Is it a code file?
+					if any(map(lambda ext: fname.endswith(ext), self.parser.get_code_extensions())):
+						# parse file adding contents as child
+						try:
+							children.append(self.parser.convert_file(fullpath))
+						except ParseError:
+							# just skip if it doesn't compile
+							pass
 					
 		pkg.children = children
 		return pkg					
@@ -343,7 +380,7 @@ class ProjectManager(object):
 		package = self._get_package(path)		
 		
 		package.children.append(Package(name=name))
-		package.children.sort(key="name")
+		package.children.sort(key=lambda x: x.name)
 
 		# update output
 		self.output.render(self.project)
@@ -376,25 +413,34 @@ class ProjectManager(object):
 		"""	
 		Creates or replaces the necessary nodes represented by the file
 		identified by the given project-relative file path and file name.
-		Then invokes output render to update.
+		Then invokes output render to update. The Construct representing 
+		this file need not already exist. This allows for an uncompilable
+		file to be edited to be compilable, and a new Construct be created.
 		"""
 		package = self._get_package(path)
 		
-		# TODO: filename to construct name!
+		# parse file to get new Construct
+		try:
+			con = self.parser.convert_file(os.path.join(self.dirpath,path,filename))
 		
-		# find construct by name (may not exist)
-		for i,child in enumerate(package.children):
-			if child.name == name:
-				# found existing, remove it
-				del(package.children[i])
-				break
+			# find construct by name. It may not already exist, but if it does
+			# it will have the same name.
+			for i,child in enumerate(package.children):
+				if child.name == con.name:
+					# found existing, remove it
+					del(package.children[i])
+					break
 				
-		# parse file and add construct
-		package.children.append(self.parser.convert_file(os.path.join(self.dirpath,path,filename)))
-		package.children.sort(key="name")
+			# add new construct to package
+			package.children.append(con)
+			package.children.sort(key=lambda x: x.name)
 		
-		# update output
-		self.output.render(self.project)
+			# update output
+			self.output.render(self.project)
+		
+		except ParseError:
+			# just leave as is, if file doesn't compile
+			pass
 
 	def _get_package(self, path):
 		"""	
@@ -426,42 +472,44 @@ class ProjectManager(object):
 		File monitor hook - invoked when a directory is created
 		"""
 		logging.info("dir %s created in %s" % (name,path))
-		self._create_package(path,name)
+		if self.dot_files or not name.startswith("."):
+			self._create_package(path,name)
 		
 	def handle_create_file(self,path,name):
 		"""	
 		File monitor hook - invoked when a file is created
 		"""
 		logging.info("file %s created in %s" % (name,path))
-		self._update_file_contents(path,name)
+		if self.dot_files or not name.startswith("."):
+			self._update_file_contents(path,name)
 		
 	def handle_change_file(self,path,name):
 		"""	
 		File monitor hook - invoked when an existing file is altered
 		"""
 		logging.info("file %s changed in %s" % (name,path))
-		self._update_file_contents(path,name)
+		if self.dot_files or not name.startswith("."):
+			self._update_file_contents(path,name)
 		
 	def handle_remove_dir(self,path,name):
 		"""	
 		File monitor hook - invoked when an existing directory is removed
 		"""
 		logging.info("dir %s removed from %s" % (name,path))
-		self._remove_node(path,name)
+		if self.dot_files or not name.startswith("."):
+			self._remove_node(path,name)
 		
 	def handle_remove_file(self,path,name):
 		"""	
 		File monitor hook - invoked when an existing file is removed
 		"""
 		logging.info("file %s removed from %s" % (name,path))
-		self._remove_node(path,name)
+		if self.dot_files or not name.startswith("."):
+			self._remove_node(path,name)
 
 
 if __name__ == "__main__":
-	if True:
-		pass
-	else:
-		pass
 	logging.basicConfig(level=logging.ERROR)
 	f = FileMonitor()
 	f.run(sys.argv[1], Test())
+	
