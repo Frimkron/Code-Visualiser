@@ -1,11 +1,12 @@
 import ast
-#import ubigraph
+import ubigraph
 import sys
 import os
 import os.path
 import time
 import pyinotify
 import logging
+import getopt
 
 
 class Construct(object):
@@ -301,6 +302,33 @@ class SimpleOutput(object):
 				self._pretty(child,indent+1)
 
 
+class UbigraphOutput(object):
+
+	def __init__(self,host="127.0.0.1"):
+		self.host = host
+		self.api = ubigraph.Ubigraph("http://%s:20738/RPC2" % self.host)
+		
+	def render(self,tree):
+		self.api.clear()
+		self.node_styles = {
+			Package 	: self.api.newVertexStyle(shape="cube",color="#ffff00"),
+			Class 		: self.api.newVertexStyle(shape="cube",color="#ff0000"),
+			Function	: self.api.newVertexStyle(shape="cube",color="#0000ff"),
+			Iteration	: self.api.newVertexStyle(shape="cube",color="#00ff00"),
+			Branch		: self.api.newVertexStyle(shape="cube",color="#ff00ff"),
+			BranchPart	: self.api.newVertexStyle(shape="cube",color="#ff00ff")			
+		}
+		self._display_node(tree)
+		
+	def _display_node(self,node,ubiparent=None):
+		ubinode = self.api.newVertex(style=self.node_styles[node.__class__],label=node.name)
+		if ubiparent:
+			self.api.newEdge(ubiparent,ubinode,oriented=True)
+		if node.children:
+			for child in node.children:
+				self._display_node(child,ubinode)
+
+
 class FileUpdateException(Exception):
 	pass
 
@@ -508,8 +536,58 @@ class ProjectManager(object):
 			self._remove_node(path,name)
 
 
+
+usage_text = """Usage: %s [options] directory
+Options:
+	-o	--output	Output method, one of: simple,ubigraph
+	-l	--lang		Language, one of: python
+	-m	--monitor	File monitor method, one of: inotify
+	-n	--name		Project name
+"""
+
 if __name__ == "__main__":
 	logging.basicConfig(level=logging.ERROR)
-	f = FileMonitor()
-	f.run(sys.argv[1], Test())
+	
+	opts, args = getopt.getopt(sys.argv[1:], "o:l:m:n:d", 
+		["output=","lang=","monitor=","name=","dotfiles"])
+	if len(args) < 1:
+		print usage_text % sys.argv[0]
+		sys.exit()
+		
+	proj_dir = args[0]
+		
+	output_type = "ubigraph"
+	lang_type = "python"
+	monitor_type = "inotify"
+	proj_name = "Project"
+	dot_files = False
+	
+	for opt,val in opts:
+		if opt in ("-o","--output"):
+			if val in ("simple","ubigraph"):
+				output_type = val
+		elif opt in ("-l","--lang"):
+			if val in ("python",):
+				lang_type = val
+		elif opt in ("-m","--monitor"):
+			if val in ("inotify",):
+				monitor_type = val
+		elif opt in ("-n","--name"):
+			proj_name = val
+		elif opt in ("-d","--dotfiles"):
+			dot_files = True
+	
+	if output_type=="simple":
+		output = SimpleOutput()
+	elif output_type=="ubigraph":
+		output = UbigraphOutput()
+		
+	if lang_type=="python":
+		parser = PythonConverter()
+		
+	if monitor_type=="inotify":
+		monitor=FileMonitor()
+		
+	manager = ProjectManager(monitor,parser,output,proj_dir,proj_name,dot_files)
+	manager.manage()
 	
